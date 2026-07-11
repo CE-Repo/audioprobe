@@ -1,0 +1,17 @@
+[package]
+name = "audioprobe"
+version = "0.1.0"
+edition = "2021"
+description = "Fast native audio-track inspector: bit depth, sample rate, channels and codec for every audio track in MKV, TS, M2TS, MP4 and more — no ffprobe, no subprocesses."
+license = "MIT"
+repository = "https://github.com/ce-repo/audioprobe"
+categories = ["command-line-utilities", "multimedia::audio"]
+keywords = ["audio", "mkv", "mpeg-ts", "probe", "mediainfo"]
+
+[dependencies]
+# intentionally none — everything is parsed natively
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
