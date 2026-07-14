@@ -190,8 +190,7 @@ fn parse_trak<R: Read + Seek>(r: &mut R, start: u64, end: u64, index: u32) -> Op
         let version = u16::from_be_bytes([entry[16], entry[17]]);
         let mut channels = u16::from_be_bytes([entry[24], entry[25]]) as u32;
         let mut sample_size = u16::from_be_bytes([entry[26], entry[27]]) as u32;
-        let mut rate =
-            (u32::from_be_bytes([entry[32], entry[33], entry[34], entry[35]]) >> 16) as u32;
+        let mut rate = u32::from_be_bytes([entry[32], entry[33], entry[34], entry[35]]) >> 16;
         let mut children_off = 36usize;
         if version == 1 {
             children_off = 36 + 16;
