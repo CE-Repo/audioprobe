@@ -63,7 +63,7 @@ mod tests {
         si[10] = (rate >> 12) as u8;
         si[11] = (rate >> 4) as u8;
         si[12] = (((rate & 0xF) as u8) << 4) | ((2u8 - 1) << 1) | ((24 - 1) >> 4);
-        si[13] = (((24u8 - 1) & 0xF) << 4) | 0;
+        si[13] = ((24u8 - 1) & 0xF) << 4;
         let mut data = b"fLaC".to_vec();
         data.push(0x80); // last block, type 0
         data.extend_from_slice(&[0, 0, 34]);

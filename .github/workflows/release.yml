@@ -1,0 +1,153 @@
+# Release builds: one per-platform binary archive per target.
+#
+# Triggers:
+# - Pushing a version tag (v0.1.0, ...) runs the gates, builds every target,
+#   and attaches the archives + SHA256SUMS to a *draft* GitHub release.
+# - workflow_dispatch (the "Run workflow" button on the Actions tab, or
+#   `gh workflow run release.yml`) runs the gates and builds every target and
+#   uploads the archives as run artifacts, but creates no release — the way to
+#   produce binaries on demand without cutting a version.
+#
+# Gates mirror the project bar: zero build/clippy warnings (RUSTFLAGS=-Dwarnings)
+# and all tests pass.
+#
+# Platform notes (ported from hdrprobe):
+# - Linux builds run on ubuntu-22.04 / ubuntu-22.04-arm so the glibc binaries
+#   link against glibc 2.35 and run on older distros.
+# - aarch64-unknown-linux-musl is fully static (no libc/loader dependency), for
+#   minimal userspaces like CoreELEC/LibreELEC boxes. The dependency tree is
+#   pure Rust, so rustc's self-contained musl mode links it without a musl
+#   sysroot; musl-tools is installed only as the link driver.
+# - GitHub retired the free Intel macOS runners, so x86_64-apple-darwin is
+#   cross-compiled on the arm64 runner (Xcode ships both toolchains); its tests
+#   still execute there via Rosetta 2.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  checks:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          if [ "$tag" != "$crate" ]; then
+            echo "tag v$tag does not match Cargo.toml version $crate" >&2
+            exit 1
+          fi
+
+      - name: Clippy (zero warnings)
+        run: cargo clippy --release --all-targets
+
+      - name: Tests
+        run: cargo test --release
+
+  build:
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-22.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Tests on target
+        run: cargo test --release --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_TYPE" = "tag" ] || version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          name="audioprobe-${version}-${{ matrix.target }}"
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/audioprobe" LICENSE README.md "$name/"
+          tar czf "$name.tar.gz" "$name"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          if ($env:GITHUB_REF_TYPE -ne 'tag') {
+            $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          }
+          $name = "audioprobe-$version-${{ matrix.target }}"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/audioprobe.exe", LICENSE, README.md $name/
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audioprobe-${{ matrix.target }}
+          path: |
+            audioprobe-*.tar.gz
+            audioprobe-*.zip
+          if-no-files-found: error
+
+  # Draft release: the archives and a checksum file are attached, but nothing
+  # is published until the draft is reviewed and released by hand. Tag pushes
+  # only — a manual (workflow_dispatch) run stops after `build`, leaving the
+  # binaries as downloadable run artifacts.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum audioprobe-* > SHA256SUMS
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "audioprobe $GITHUB_REF_NAME" \
+            dist/*
