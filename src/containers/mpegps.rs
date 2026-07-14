@@ -161,7 +161,7 @@ fn pes_header_len(body: &[u8]) -> usize {
     while j < 16 && body.get(j) == Some(&0xFF) {
         j += 1;
     }
-    if body.get(j).map_or(false, |&b| b & 0xC0 == 0x40) {
+    if body.get(j).is_some_and(|&b| b & 0xC0 == 0x40) {
         j += 2; // STD buffer scale/size
     }
     match body.get(j).map(|&b| b & 0xF0) {

@@ -46,9 +46,10 @@ movie.mkv  [Matroska]
 
 ## Supported inputs
 
-| Containers | Matroska/WebM (`.mkv .mka .webm`), MPEG-TS (`.ts`), BDAV (`.m2ts .mts`), MP4/MOV (`.mp4 .m4a .mov`), FLAC, WAV, Ogg |
+| Containers | Matroska/WebM (`.mkv .mka .webm`), MPEG-TS (`.ts`), BDAV (`.m2ts .mts`), MP4/MOV (`.mp4 .m4a .mov`), AVI (`.avi`), MPEG program streams (`.mpg .mpeg .vob`), FLAC, WAV, Ogg |
 |---|---|
-| **Codecs** | AC-3, E-AC-3, DTS, DTS-ES, DTS 96/24, DTS-HD MA/HRA, DTS Express, TrueHD, MLP, AAC (ADTS, LATM/LOAS, ASC), HE-AAC, MP1/MP2/MP3, FLAC, PCM/LPCM, ALAC, Opus, Vorbis, WAVEFORMATEX (A_MS/ACM) |
+| **Disc images** | Blu-ray ISO (BDMV, UDF) and DVD-Video ISO (VIDEO_TS, ISO9660) — `.iso` |
+| **Codecs** | AC-3, E-AC-3, DTS, DTS-ES, DTS 96/24, DTS-HD MA/HRA, DTS Express, TrueHD, MLP, AAC (ADTS, LATM/LOAS, ASC), HE-AAC, MP1/MP2/MP3, FLAC, PCM/LPCM (Blu-ray + DVD), ALAC, Opus, Vorbis, WAVEFORMATEX (A_MS/ACM) |
 | **Elementary streams** | `.ac3 .eac3 .dts .dtshd .thd .mlp .aac .mp3 …` |
 
 Bit depth is reported where the format defines one (PCM, FLAC, ALAC, DTS,
@@ -165,6 +166,19 @@ cargo build --release
 - **MP4/MOV** — the `moov` box tree is walked down to the `stsd` sample
   entries; codec configuration boxes (`esds`, `dac3`, `dec3`, `ddts`,
   `dfLa`, `dOps`, `alac`) provide exact parameters.
+- **AVI** — the `hdrl` header list is walked to each stream's `strl`; every
+  audio stream's `strf` (a WAVEFORMATEX) gives the codec and parameters. The
+  `movi` payload is never read.
+- **MPEG program streams** (`.mpg .mpeg .vob`) — the pack / system / PES
+  layers are walked and each audio stream's payload collected: MPEG audio
+  (`0xC0–0xDF`) and the DVD `private_stream_1` sub-streams (AC-3, DTS and
+  DVD-LPCM), decoded by the same native codec parsers.
+- **Disc images** (`.iso`) — a Blu-ray image is walked as a UDF filesystem to
+  `BDMV/PLAYLIST`; the playlists are ranked by deduped duration and the
+  winner's largest `BDMV/STREAM/*.m2ts` clip is probed as a transport stream.
+  A DVD-Video image is walked as ISO9660 to `VIDEO_TS`; the title set with the
+  most VOB bytes is probed as a program stream. The clip is read in place from
+  the image — no extraction.
 - **Codec headers parsed natively:** AC-3/E-AC-3 syncframes, DTS core +
   extension substream asset descriptors (with XLL/XBR/LBR classification),
   TrueHD/MLP major sync, ADTS and LATM/LOAS AAC, AudioSpecificConfig,
@@ -186,4 +200,8 @@ cargo build --release
 - For DTS-HD, classification into MA/HRA relies on extension-substream sync
   patterns within the scanned window plus the PMT stream type; exotic
   streams may fall back to the generic "DTS-HD" label.
-- MPEG program streams (`.vob`, `.mpg`) are not supported.
+- ISO disc images require file access (random access across the image), so
+  they cannot be probed from stdin. AACS-encrypted Blu-ray images and
+  CSS-scrambled DVDs cannot be read; probe a decrypted backup.
+- A main-feature clip fragmented into non-adjacent extents inside a Blu-ray
+  ISO is reported as unsupported rather than probed from the wrong offset.

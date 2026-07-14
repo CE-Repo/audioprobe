@@ -130,11 +130,11 @@ fn network_fstype(path: &Path, mounts: &str) -> bool {
         let is_prefix = path == mount
             || (path.starts_with(&mount)
                 && (mount == "/" || path[mount.len()..].starts_with(['/', '\\'])));
-        if is_prefix && best.map_or(true, |(len, _)| mount.len() >= len) {
+        if is_prefix && best.is_none_or(|(len, _)| mount.len() >= len) {
             best = Some((mount.len(), NETWORK_FSTYPES.contains(&fstype)));
         }
     }
-    best.map_or(false, |(_, net)| net)
+    best.is_some_and(|(_, net)| net)
 }
 
 /// Decode the octal escapes `/proc/self/mounts` uses for whitespace in mount

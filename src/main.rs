@@ -72,8 +72,10 @@ EXIT CODES:
     2  at least one file could not be probed
 
 Supported containers: Matroska/WebM (.mkv .mka .webm), MPEG-TS (.ts),
-BDAV M2TS (.m2ts .mts), MP4/MOV (.mp4 .m4a .mov), FLAC, WAV, Ogg and raw
-elementary streams (.ac3 .eac3 .dts .dtshd .thd .mlp .aac .mp3 …).
+BDAV M2TS (.m2ts .mts), MP4/MOV (.mp4 .m4a .mov), AVI (.avi), MPEG program
+streams (.mpg .mpeg .vob), Blu-ray and DVD-Video disc images (.iso), FLAC,
+WAV, Ogg and raw elementary streams (.ac3 .eac3 .dts .dtshd .thd .mlp .aac
+.mp3 …).
 
 Pass '-' to probe a stream piped to stdin (a bounded head is read, so the
 result is marked truncated when the stream is larger than the head budget):

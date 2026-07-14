@@ -2,6 +2,7 @@
 //! (FLAC, WAV, Ogg and raw elementary streams).
 
 pub mod avi;
+pub mod iso;
 pub mod matroska;
 pub mod mp4;
 pub mod mpegps;
@@ -50,6 +51,12 @@ fn probe_file(path: &Path, opts: &Options) -> Result<Report, String> {
         // standard mmap caveat that another writer truncating it concurrently
         // could fault. The map is dropped at the end of this scope.
         if let Ok(mmap) = unsafe { memmap2::Mmap::map(&file) } {
+            // ISO disc images need random access across the whole image (the
+            // main-feature clip sits far from any front magic), so they are
+            // dispatched from the full slice rather than the streaming reader.
+            if iso::looks_like_iso(&mmap) {
+                return iso::probe(&mmap, opts);
+            }
             let remote = crate::prefetch::is_remote(&file, path);
             crate::prefetch::warm_metadata(remote, &file, path, &mmap);
             return probe_reader(Cursor::new(&mmap[..]), file_len, path, opts);
@@ -65,6 +72,12 @@ fn probe_file(path: &Path, opts: &Options) -> Result<Report, String> {
 /// gives the `Read + Seek` the container backends need, and the synthetic `-`
 /// path drives the extension-agnostic elementary-stream candidate order.
 pub fn probe_stream(buf: Vec<u8>, opts: &Options) -> Result<Report, String> {
+    if iso::looks_like_iso(&buf) {
+        return Err(
+            "ISO disc images must be probed as a file (random access required), not via stdin"
+                .into(),
+        );
+    }
     let len = buf.len() as u64;
     probe_reader(Cursor::new(buf), len, Path::new("-"), opts)
 }
