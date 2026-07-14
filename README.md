@@ -33,6 +33,9 @@ movie.mkv  [Matroska]
   including HDMV LPCM, TrueHD (with its embedded AC-3 compatibility core),
   DTS-HD MA/HRA and E-AC-3 stream types.
 - **Machine-readable output** with `--json`, one-liners with `--quiet`.
+- **Reads from a pipe.** `audioprobe -` probes a bounded head piped to stdin,
+  so a stream over ranged HTTP or a VFS plugin can be inspected without
+  materializing the whole file; truncated heads are reported honestly.
 
 ## Supported inputs
 
@@ -50,6 +53,7 @@ meaningful bit depth; those show `—` (`null` in JSON).
 ```
 audioprobe [OPTIONS] <PATH>...
 
+  <PATH>...          media files or directories (use '-' for stdin)
   -j, --json         machine-readable JSON output
   -q, --quiet        one-line summary per file
   -r, --recursive    recurse into directories
@@ -67,6 +71,31 @@ audioprobe *.m2ts                    # several files
 audioprobe -r -q /media/movies       # whole library, one line per file
 audioprobe --json movie.ts | jq '.files[0].audio_tracks[].sample_rate'
 ```
+
+### Reading from stdin
+
+Pass `-` to probe a stream piped to stdin instead of a file on disk:
+
+```sh
+cat movie.mkv | audioprobe -
+curl -s https://host/movie.ts | audioprobe --json -
+```
+
+audioprobe reads a **bounded head** of the pipe — enough to resolve the tracks
+without pulling the whole stream — then stops. It reads up to 16 MiB for
+container/elementary formats, or the transport-stream scan limit (`--limit-mb`,
+64 MiB by default) for a stream that sniffs as MPEG-TS/M2TS. A writer feeding
+the pipe sees a broken-pipe once audioprobe has enough; that is the normal,
+expected outcome, not an error.
+
+If the stream is larger than the head budget the report is marked truncated —
+`[truncated]` in `--quiet`, a `note:` line in the default output, and
+`"input_truncated": true` in `--json` — since a track whose first frames sit
+beyond the cut may be missing. A stream that ends within the budget reports
+exactly like a file probe.
+
+Limits: `-` may be given at most once per run, and stdin is a pipe (no seeking),
+so this is always a head probe.
 
 JSON output:
 
