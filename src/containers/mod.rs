@@ -37,6 +37,23 @@ pub fn probe_path(path: &Path, opts: &Options) -> Report {
 fn probe_file(path: &Path, opts: &Options) -> Result<Report, String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     let file_len = file.metadata().map_err(|e| e.to_string())?.len();
+
+    // Parse over an mmap when possible: it gives the container backends the same
+    // `Read + Seek` (via a `Cursor` over the mapped bytes) while letting the
+    // network-filesystem warmer pre-stream the regions we're about to touch, so
+    // a NAS probe's scattered page faults collapse into a few pipelined reads.
+    // Empty files and mmap failures fall back to the plain streaming reader.
+    if file_len > 0 {
+        // SAFETY: the file is opened read-only and only inspected; we accept the
+        // standard mmap caveat that another writer truncating it concurrently
+        // could fault. The map is dropped at the end of this scope.
+        if let Ok(mmap) = unsafe { memmap2::Mmap::map(&file) } {
+            let remote = crate::prefetch::is_remote(&file, path);
+            crate::prefetch::warm_metadata(remote, &file, path, &mmap);
+            return probe_reader(Cursor::new(&mmap[..]), file_len, path, opts);
+        }
+    }
+
     let reader = BufReader::new(file);
     probe_reader(reader, file_len, path, opts)
 }

@@ -22,8 +22,15 @@ movie.mkv  [Matroska]
 
 ## Features
 
-- **Zero dependencies, zero subprocesses.** One static binary, pure Rust,
-  `cargo build` and done.
+- **No subprocesses, one small dependency.** Every container and codec is
+  parsed natively in pure Rust; the only crate pulled in is `memmap2`, which
+  backs file probes so the network-filesystem warmer can accelerate them.
+- **NAS-aware.** On a file living on a mounted SMB/NFS share, audioprobe
+  memory-maps it and pre-streams exactly the regions it is about to parse
+  (front metadata, plus an MP4 `moov` wherever it sits), turning the scattered
+  synchronous page faults a naive read would make into a few pipelined reads —
+  the "same file is 20 ms local / 700 ms on the NAS" gap. Local probes detect
+  they are local and skip the warm entirely, so the fast path is untouched.
 - **Bit depth where the container doesn't know it.** Matroska often omits
   `BitDepth` for DTS or TrueHD tracks; audioprobe samples the first frames
   from the clusters and reads the value straight out of the bitstream
@@ -127,7 +134,8 @@ JSON output:
 
 ## Building
 
-Requires a stable Rust toolchain (1.75+). No further dependencies.
+Requires a stable Rust toolchain (1.75+). The only dependency is `memmap2`
+(fetched by cargo); everything else is parsed natively.
 
 ```sh
 cargo build --release
@@ -162,6 +170,14 @@ cargo build --release
   TrueHD/MLP major sync, ADTS and LATM/LOAS AAC, AudioSpecificConfig,
   MPEG audio headers, FLAC STREAMINFO, OpusHead, Vorbis ID headers,
   Blu-ray LPCM headers and WAVEFORMATEX.
+- **Network-filesystem warming** — a file probe maps the file and, when it
+  detects the file lives on a mounted network share (Windows: the open
+  handle's remote-protocol info; Linux: the fstype of the holding mount in
+  `/proc/self/mounts` — `cifs/smb3/nfs/nfs4/9p/sshfs/…`), pre-streams the
+  ranges it is about to parse before parsing starts. Local files and other
+  platforms skip the warm, so nothing changes on the fast local path. This is
+  a timing-only optimization — the report is byte-identical either way. (A
+  stdin probe reads its bounded head straight from the pipe and is unaffected.)
 
 ## Limitations
 

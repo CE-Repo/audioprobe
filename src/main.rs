@@ -8,6 +8,7 @@
 mod bits;
 mod codecs;
 mod containers;
+mod prefetch;
 mod report;
 
 use std::io::{IsTerminal, Read};
