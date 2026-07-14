@@ -481,18 +481,16 @@ fn parse_block_header(data: &[u8]) -> Option<(u64, usize)> {
                     p += 1;
                 }
             }
-            3 => {
+            3 if nframes_minus1 > 0 => {
                 // EBML: first size as VINT, then n-2 signed VINT deltas
-                if nframes_minus1 > 0 {
+                let l = vint_length(*data.get(p)?)? as usize;
+                p += l;
+                for _ in 0..nframes_minus1.saturating_sub(1) {
                     let l = vint_length(*data.get(p)?)? as usize;
                     p += l;
-                    for _ in 0..nframes_minus1.saturating_sub(1) {
-                        let l = vint_length(*data.get(p)?)? as usize;
-                        p += l;
-                    }
                 }
             }
-            _ => {} // fixed-size lacing: nothing to skip
+            _ => {} // fixed-size lacing (or single-frame EBML): nothing to skip
         }
     }
     if p > data.len() {
