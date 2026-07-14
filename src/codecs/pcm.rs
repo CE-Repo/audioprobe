@@ -45,6 +45,42 @@ pub fn parse_hdmv_lpcm(payload: &[u8]) -> Option<CodecInfo> {
     })
 }
 
+/// Parse the 6-byte DVD-Video LPCM audio header that follows the sub-stream id
+/// in each `private_stream_1` PES packet of an LPCM stream (sub-stream id
+/// `0xA0..=0xA7`). `hdr` is the six bytes after the sub-stream id.
+pub fn parse_dvd_lpcm(hdr: &[u8]) -> Option<CodecInfo> {
+    if hdr.len() < 5 {
+        return None;
+    }
+    // hdr[0]      number of audio frame headers
+    // hdr[1..3]   first access unit pointer
+    // hdr[3]      emphasis / mute / reserved / frame number
+    // hdr[4]      quantization(2) | sampling frequency(2) | reserved(1) | channels-1(3)
+    // hdr[5]      dynamic range control
+    let quant = hdr[4] >> 6;
+    let fs = (hdr[4] >> 4) & 0x3;
+    let channels = ((hdr[4] & 0x7) as u32) + 1;
+    let depth = match quant {
+        0 => 16,
+        1 => 20,
+        2 => 24,
+        _ => return None,
+    };
+    let rate = match fs {
+        0 => 48000,
+        1 => 96000,
+        _ => return None, // DVD-Video LPCM is 48 or 96 kHz only
+    };
+    Some(CodecInfo {
+        name: Some("LPCM (DVD)".into()),
+        sample_rate: Some(rate),
+        bit_depth: Some(depth),
+        channels: Some(channels),
+        lfe: Some(false),
+        note: None,
+    })
+}
+
 /// Parse a WAVEFORMATEX structure (WAV `fmt ` chunk, Matroska A_MS/ACM
 /// CodecPrivate). Handles WAVE_FORMAT_EXTENSIBLE.
 pub fn parse_waveformatex(b: &[u8]) -> Option<CodecInfo> {

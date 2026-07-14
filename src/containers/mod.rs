@@ -1,8 +1,10 @@
 //! Container detection and dispatch, plus probers for the simple formats
 //! (FLAC, WAV, Ogg and raw elementary streams).
 
+pub mod avi;
 pub mod matroska;
 pub mod mp4;
+pub mod mpegps;
 pub mod mpegts;
 
 use std::fs::File;
@@ -95,8 +97,15 @@ fn probe_reader<R: Read + Seek>(
     if magic.starts_with(b"RIFF") && magic.len() >= 12 && &magic[8..12] == b"WAVE" {
         return probe_wav(reader);
     }
+    if magic.starts_with(b"RIFF") && magic.len() >= 12 && &magic[8..12] == b"AVI " {
+        return avi::probe(reader, file_len);
+    }
     if magic.starts_with(b"OggS") {
         return probe_ogg(reader);
+    }
+    // MPEG program stream (DVD VOB / .mpg / .mpeg): pack-header start code.
+    if magic.starts_with(&[0x00, 0x00, 0x01, 0xBA]) {
+        return mpegps::probe(reader, opts.scan_limit);
     }
     // MPEG-TS detection needs a larger window (sync pattern check).
     {

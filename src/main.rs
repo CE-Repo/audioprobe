@@ -32,7 +32,8 @@ const STDIN_HEAD_BYTES: usize = 16 * 1024 * 1024;
 const KNOWN_EXTENSIONS: &[&str] = &[
     "mkv", "mka", "mk3d", "webm", "ts", "m2ts", "mts", "tsv", "mp4", "m4a", "m4v", "mov", "flac",
     "wav", "ogg", "oga", "opus", "ac3", "eac3", "ec3", "dts", "dtshd", "dtsma", "thd", "truehd",
-    "mlp", "aac", "adts", "latm", "loas", "mp3", "mp2", "mp1", "mpa",
+    "mlp", "aac", "adts", "latm", "loas", "mp3", "mp2", "mp1", "mpa", "avi", "vob", "mpg", "mpeg",
+    "m2p", "ps", "iso",
 ];
 
 struct Args {
