@@ -580,6 +580,43 @@ fn build_track(t: &MkvTrack, sample: Option<&Vec<u8>>) -> Track {
     track
 }
 
+fn codec_display_name(codec_id: &str) -> String {
+    match codec_id {
+        "A_AC3" => "AC-3".into(),
+        "A_EAC3" => "E-AC-3".into(),
+        "A_TRUEHD" => "TrueHD".into(),
+        "A_MLP" => "MLP".into(),
+        "A_DTS" => "DTS".into(),
+        "A_DTS/LOSSLESS" => "DTS-HD MA".into(),
+        "A_DTS/EXPRESS" => "DTS Express".into(),
+        "A_FLAC" => "FLAC".into(),
+        "A_OPUS" => "Opus".into(),
+        "A_VORBIS" => "Vorbis".into(),
+        "A_ALAC" => "ALAC".into(),
+        "A_WAVPACK4" => "WavPack".into(),
+        "A_TTA1" => "TTA".into(),
+        "A_MPEG/L3" => "MP3".into(),
+        "A_MPEG/L2" => "MP2".into(),
+        "A_MPEG/L1" => "MP1".into(),
+        "A_PCM/INT/LIT" => "PCM".into(),
+        "A_PCM/INT/BIG" => "PCM (BE)".into(),
+        "A_PCM/FLOAT/IEEE" => "PCM (float)".into(),
+        "A_MS/ACM" => "ACM".into(),
+        id if id.starts_with("A_AAC") => {
+            let mut name = "AAC".to_string();
+            if id.contains("/SBR") {
+                name = "HE-AAC".into();
+            } else if id.contains("/LC") {
+                name = "AAC-LC".into();
+            } else if id.contains("/MAIN") {
+                name = "AAC Main".into();
+            }
+            name
+        }
+        other => other.trim_start_matches("A_").to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -677,42 +714,5 @@ mod tests {
         assert_eq!(t.sample_rate, Some(48000)); // container float
         assert_eq!(t.bit_depth, None); // no BitDepth element, no sampling
         assert_eq!(t.note.as_deref(), Some("container metadata only"));
-    }
-}
-
-fn codec_display_name(codec_id: &str) -> String {
-    match codec_id {
-        "A_AC3" => "AC-3".into(),
-        "A_EAC3" => "E-AC-3".into(),
-        "A_TRUEHD" => "TrueHD".into(),
-        "A_MLP" => "MLP".into(),
-        "A_DTS" => "DTS".into(),
-        "A_DTS/LOSSLESS" => "DTS-HD MA".into(),
-        "A_DTS/EXPRESS" => "DTS Express".into(),
-        "A_FLAC" => "FLAC".into(),
-        "A_OPUS" => "Opus".into(),
-        "A_VORBIS" => "Vorbis".into(),
-        "A_ALAC" => "ALAC".into(),
-        "A_WAVPACK4" => "WavPack".into(),
-        "A_TTA1" => "TTA".into(),
-        "A_MPEG/L3" => "MP3".into(),
-        "A_MPEG/L2" => "MP2".into(),
-        "A_MPEG/L1" => "MP1".into(),
-        "A_PCM/INT/LIT" => "PCM".into(),
-        "A_PCM/INT/BIG" => "PCM (BE)".into(),
-        "A_PCM/FLOAT/IEEE" => "PCM (float)".into(),
-        "A_MS/ACM" => "ACM".into(),
-        id if id.starts_with("A_AAC") => {
-            let mut name = "AAC".to_string();
-            if id.contains("/SBR") {
-                name = "HE-AAC".into();
-            } else if id.contains("/LC") {
-                name = "AAC-LC".into();
-            } else if id.contains("/MAIN") {
-                name = "AAC Main".into();
-            }
-            name
-        }
-        other => other.trim_start_matches("A_").to_string(),
     }
 }

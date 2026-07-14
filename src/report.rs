@@ -33,6 +33,11 @@ pub struct Report {
     pub container: String,
     pub tracks: Vec<Track>,
     pub error: Option<String>,
+    /// Set only for `audioprobe -` when the piped stream exceeded the head
+    /// budget: the tracks reported come from the probed prefix, so a track
+    /// whose first frames sit beyond the cut may be missing or lack a
+    /// sampled bit depth. Always `false` for file probes.
+    pub truncated: bool,
 }
 
 fn fmt_rate(rate: Option<u32>) -> String {
@@ -62,6 +67,11 @@ pub fn render_text(r: &Report, out: &mut String) {
     if let Some(err) = &r.error {
         out.push_str(&format!("  error: {}\n", err));
         return;
+    }
+    if r.truncated {
+        out.push_str(
+            "  note: input truncated at the head budget; later tracks may be missing\n",
+        );
     }
     if r.tracks.is_empty() {
         out.push_str("  no audio tracks found\n");
@@ -151,6 +161,9 @@ pub fn render_quiet(r: &Report, out: &mut String) {
             .collect();
         out.push_str(&parts.join("; "));
     }
+    if r.truncated {
+        out.push_str(" [truncated]");
+    }
     out.push('\n');
 }
 
@@ -198,6 +211,9 @@ pub fn render_json(reports: &[Report]) -> String {
             }
         ));
         out.push_str(&format!("      \"error\": {},\n", json_opt_str(&r.error)));
+        if r.truncated {
+            out.push_str("      \"input_truncated\": true,\n");
+        }
         out.push_str("      \"audio_tracks\": [\n");
         for (ti, t) in r.tracks.iter().enumerate() {
             out.push_str("        {\n");

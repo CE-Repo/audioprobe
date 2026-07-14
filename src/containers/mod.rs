@@ -1,12 +1,15 @@
 //! Container detection and dispatch, plus probers for the simple formats
 //! (FLAC, WAV, Ogg and raw elementary streams).
 
+pub mod avi;
+pub mod iso;
 pub mod matroska;
 pub mod mp4;
+pub mod mpegps;
 pub mod mpegts;
 
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::codecs::{self, CodecInfo};
@@ -21,7 +24,7 @@ pub struct Options {
 
 pub fn probe_path(path: &Path, opts: &Options) -> Report {
     let display = path.display().to_string();
-    match probe_inner(path, opts) {
+    match probe_file(path, opts) {
         Ok(mut report) => {
             report.path = display;
             report
@@ -34,11 +37,57 @@ pub fn probe_path(path: &Path, opts: &Options) -> Report {
     }
 }
 
-fn probe_inner(path: &Path, opts: &Options) -> Result<Report, String> {
+fn probe_file(path: &Path, opts: &Options) -> Result<Report, String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     let file_len = file.metadata().map_err(|e| e.to_string())?.len();
-    let mut reader = BufReader::new(file);
 
+    // Parse over an mmap when possible: it gives the container backends the same
+    // `Read + Seek` (via a `Cursor` over the mapped bytes) while letting the
+    // network-filesystem warmer pre-stream the regions we're about to touch, so
+    // a NAS probe's scattered page faults collapse into a few pipelined reads.
+    // Empty files and mmap failures fall back to the plain streaming reader.
+    if file_len > 0 {
+        // SAFETY: the file is opened read-only and only inspected; we accept the
+        // standard mmap caveat that another writer truncating it concurrently
+        // could fault. The map is dropped at the end of this scope.
+        if let Ok(mmap) = unsafe { memmap2::Mmap::map(&file) } {
+            // ISO disc images need random access across the whole image (the
+            // main-feature clip sits far from any front magic), so they are
+            // dispatched from the full slice rather than the streaming reader.
+            if iso::looks_like_iso(&mmap) {
+                return iso::probe(&mmap, opts);
+            }
+            let remote = crate::prefetch::is_remote(&file, path);
+            crate::prefetch::warm_metadata(remote, &file, path, &mmap);
+            return probe_reader(Cursor::new(&mmap[..]), file_len, path, opts);
+        }
+    }
+
+    let reader = BufReader::new(file);
+    probe_reader(reader, file_len, path, opts)
+}
+
+/// Probe a stream already buffered in memory (the `audioprobe -` stdin head).
+/// Feeds the same sniff-dispatched pipeline a file probe runs — a `Cursor`
+/// gives the `Read + Seek` the container backends need, and the synthetic `-`
+/// path drives the extension-agnostic elementary-stream candidate order.
+pub fn probe_stream(buf: Vec<u8>, opts: &Options) -> Result<Report, String> {
+    if iso::looks_like_iso(&buf) {
+        return Err(
+            "ISO disc images must be probed as a file (random access required), not via stdin"
+                .into(),
+        );
+    }
+    let len = buf.len() as u64;
+    probe_reader(Cursor::new(buf), len, Path::new("-"), opts)
+}
+
+fn probe_reader<R: Read + Seek>(
+    mut reader: R,
+    file_len: u64,
+    path: &Path,
+    opts: &Options,
+) -> Result<Report, String> {
     let mut magic = [0u8; 16];
     let got = read_up_to(&mut reader, &mut magic).map_err(|e| e.to_string())?;
     let magic = &magic[..got];
@@ -61,8 +110,15 @@ fn probe_inner(path: &Path, opts: &Options) -> Result<Report, String> {
     if magic.starts_with(b"RIFF") && magic.len() >= 12 && &magic[8..12] == b"WAVE" {
         return probe_wav(reader);
     }
+    if magic.starts_with(b"RIFF") && magic.len() >= 12 && &magic[8..12] == b"AVI " {
+        return avi::probe(reader, file_len);
+    }
     if magic.starts_with(b"OggS") {
         return probe_ogg(reader);
+    }
+    // MPEG program stream (DVD VOB / .mpg / .mpeg): pack-header start code.
+    if magic.starts_with(&[0x00, 0x00, 0x01, 0xBA]) {
+        return mpegps::probe(reader, opts.scan_limit);
     }
     // MPEG-TS detection needs a larger window (sync pattern check).
     {
@@ -87,6 +143,29 @@ fn read_up_to<R: Read>(r: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
         }
     }
     Ok(n)
+}
+
+/// Whether a sniff block dispatches to the MPEG-TS backend. Mirrors the
+/// sync-pattern gate in `probe_reader` so the stdin head budget agrees with
+/// the backend the demuxer actually picks (TS metadata rides deeper into the
+/// stream than a container header, so it earns the larger scan budget).
+pub fn sniffs_as_ts(head: &[u8]) -> bool {
+    // The container-header formats take priority in the dispatcher; only a
+    // block that isn't one of them can lock onto TS.
+    if head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])
+        || (head.len() >= 12
+            && matches!(
+                &head[4..8],
+                b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip"
+            ))
+        || head.starts_with(b"fLaC")
+        || head.starts_with(b"ID3")
+        || (head.starts_with(b"RIFF") && head.len() >= 12 && &head[8..12] == b"WAVE")
+        || head.starts_with(b"OggS")
+    {
+        return false;
+    }
+    looks_like_ts(head)
 }
 
 fn looks_like_ts(head: &[u8]) -> bool {

@@ -9,7 +9,10 @@ categories = ["command-line-utilities", "multimedia::audio"]
 keywords = ["audio", "mkv", "mpeg-ts", "probe", "mediainfo"]
 
 [dependencies]
-# intentionally none — everything is parsed natively
+# memmap2 backs file probes with an mmap so the network-filesystem prefetch
+# warmer (src/prefetch.rs) can turn scattered SMB/NFS page faults into
+# pipelined reads. Everything else is parsed natively, no other dependencies.
+memmap2 = "0.9"
 
 [profile.release]
 lto = true

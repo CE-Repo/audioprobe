@@ -71,7 +71,7 @@ pub mod tests_support {
         }
 
         pub fn finish(&self) -> Vec<u8> {
-            let mut out = vec![0u8; (self.bits.len() + 7) / 8];
+            let mut out = vec![0u8; self.bits.len().div_ceil(8)];
             for (i, b) in self.bits.iter().enumerate() {
                 if *b {
                     out[i >> 3] |= 1 << (7 - (i & 7));

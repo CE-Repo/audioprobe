@@ -22,8 +22,15 @@ movie.mkv  [Matroska]
 
 ## Features
 
-- **Zero dependencies, zero subprocesses.** One static binary, pure Rust,
-  `cargo build` and done.
+- **No subprocesses, one small dependency.** Every container and codec is
+  parsed natively in pure Rust; the only crate pulled in is `memmap2`, which
+  backs file probes so the network-filesystem warmer can accelerate them.
+- **NAS-aware.** On a file living on a mounted SMB/NFS share, audioprobe
+  memory-maps it and pre-streams exactly the regions it is about to parse
+  (front metadata, plus an MP4 `moov` wherever it sits), turning the scattered
+  synchronous page faults a naive read would make into a few pipelined reads —
+  the "same file is 20 ms local / 700 ms on the NAS" gap. Local probes detect
+  they are local and skip the warm entirely, so the fast path is untouched.
 - **Bit depth where the container doesn't know it.** Matroska often omits
   `BitDepth` for DTS or TrueHD tracks; audioprobe samples the first frames
   from the clusters and reads the value straight out of the bitstream
@@ -33,12 +40,16 @@ movie.mkv  [Matroska]
   including HDMV LPCM, TrueHD (with its embedded AC-3 compatibility core),
   DTS-HD MA/HRA and E-AC-3 stream types.
 - **Machine-readable output** with `--json`, one-liners with `--quiet`.
+- **Reads from a pipe.** `audioprobe -` probes a bounded head piped to stdin,
+  so a stream over ranged HTTP or a VFS plugin can be inspected without
+  materializing the whole file; truncated heads are reported honestly.
 
 ## Supported inputs
 
-| Containers | Matroska/WebM (`.mkv .mka .webm`), MPEG-TS (`.ts`), BDAV (`.m2ts .mts`), MP4/MOV (`.mp4 .m4a .mov`), FLAC, WAV, Ogg |
+| Containers | Matroska/WebM (`.mkv .mka .webm`), MPEG-TS (`.ts`), BDAV (`.m2ts .mts`), MP4/MOV (`.mp4 .m4a .mov`), AVI (`.avi`), MPEG program streams (`.mpg .mpeg .vob`), FLAC, WAV, Ogg |
 |---|---|
-| **Codecs** | AC-3, E-AC-3, DTS, DTS-ES, DTS 96/24, DTS-HD MA/HRA, DTS Express, TrueHD, MLP, AAC (ADTS, LATM/LOAS, ASC), HE-AAC, MP1/MP2/MP3, FLAC, PCM/LPCM, ALAC, Opus, Vorbis, WAVEFORMATEX (A_MS/ACM) |
+| **Disc images** | Blu-ray ISO (BDMV, UDF) and DVD-Video ISO (VIDEO_TS, ISO9660) — `.iso` |
+| **Codecs** | AC-3, E-AC-3, DTS, DTS-ES, DTS 96/24, DTS-HD MA/HRA, DTS Express, TrueHD, MLP, AAC (ADTS, LATM/LOAS, ASC), HE-AAC, MP1/MP2/MP3, FLAC, PCM/LPCM (Blu-ray + DVD), ALAC, Opus, Vorbis, WAVEFORMATEX (A_MS/ACM) |
 | **Elementary streams** | `.ac3 .eac3 .dts .dtshd .thd .mlp .aac .mp3 …` |
 
 Bit depth is reported where the format defines one (PCM, FLAC, ALAC, DTS,
@@ -50,6 +61,7 @@ meaningful bit depth; those show `—` (`null` in JSON).
 ```
 audioprobe [OPTIONS] <PATH>...
 
+  <PATH>...          media files or directories (use '-' for stdin)
   -j, --json         machine-readable JSON output
   -q, --quiet        one-line summary per file
   -r, --recursive    recurse into directories
@@ -67,6 +79,31 @@ audioprobe *.m2ts                    # several files
 audioprobe -r -q /media/movies       # whole library, one line per file
 audioprobe --json movie.ts | jq '.files[0].audio_tracks[].sample_rate'
 ```
+
+### Reading from stdin
+
+Pass `-` to probe a stream piped to stdin instead of a file on disk:
+
+```sh
+cat movie.mkv | audioprobe -
+curl -s https://host/movie.ts | audioprobe --json -
+```
+
+audioprobe reads a **bounded head** of the pipe — enough to resolve the tracks
+without pulling the whole stream — then stops. It reads up to 16 MiB for
+container/elementary formats, or the transport-stream scan limit (`--limit-mb`,
+64 MiB by default) for a stream that sniffs as MPEG-TS/M2TS. A writer feeding
+the pipe sees a broken-pipe once audioprobe has enough; that is the normal,
+expected outcome, not an error.
+
+If the stream is larger than the head budget the report is marked truncated —
+`[truncated]` in `--quiet`, a `note:` line in the default output, and
+`"input_truncated": true` in `--json` — since a track whose first frames sit
+beyond the cut may be missing. A stream that ends within the budget reports
+exactly like a file probe.
+
+Limits: `-` may be given at most once per run, and stdin is a pipe (no seeking),
+so this is always a head probe.
 
 JSON output:
 
@@ -98,7 +135,8 @@ JSON output:
 
 ## Building
 
-Requires a stable Rust toolchain (1.75+). No further dependencies.
+Requires a stable Rust toolchain (1.75+). The only dependency is `memmap2`
+(fetched by cargo); everything else is parsed natively.
 
 ```sh
 cargo build --release
@@ -128,11 +166,32 @@ cargo build --release
 - **MP4/MOV** — the `moov` box tree is walked down to the `stsd` sample
   entries; codec configuration boxes (`esds`, `dac3`, `dec3`, `ddts`,
   `dfLa`, `dOps`, `alac`) provide exact parameters.
+- **AVI** — the `hdrl` header list is walked to each stream's `strl`; every
+  audio stream's `strf` (a WAVEFORMATEX) gives the codec and parameters. The
+  `movi` payload is never read.
+- **MPEG program streams** (`.mpg .mpeg .vob`) — the pack / system / PES
+  layers are walked and each audio stream's payload collected: MPEG audio
+  (`0xC0–0xDF`) and the DVD `private_stream_1` sub-streams (AC-3, DTS and
+  DVD-LPCM), decoded by the same native codec parsers.
+- **Disc images** (`.iso`) — a Blu-ray image is walked as a UDF filesystem to
+  `BDMV/PLAYLIST`; the playlists are ranked by deduped duration and the
+  winner's largest `BDMV/STREAM/*.m2ts` clip is probed as a transport stream.
+  A DVD-Video image is walked as ISO9660 to `VIDEO_TS`; the title set with the
+  most VOB bytes is probed as a program stream. The clip is read in place from
+  the image — no extraction.
 - **Codec headers parsed natively:** AC-3/E-AC-3 syncframes, DTS core +
   extension substream asset descriptors (with XLL/XBR/LBR classification),
   TrueHD/MLP major sync, ADTS and LATM/LOAS AAC, AudioSpecificConfig,
   MPEG audio headers, FLAC STREAMINFO, OpusHead, Vorbis ID headers,
   Blu-ray LPCM headers and WAVEFORMATEX.
+- **Network-filesystem warming** — a file probe maps the file and, when it
+  detects the file lives on a mounted network share (Windows: the open
+  handle's remote-protocol info; Linux: the fstype of the holding mount in
+  `/proc/self/mounts` — `cifs/smb3/nfs/nfs4/9p/sshfs/…`), pre-streams the
+  ranges it is about to parse before parsing starts. Local files and other
+  platforms skip the warm, so nothing changes on the fast local path. This is
+  a timing-only optimization — the report is byte-identical either way. (A
+  stdin probe reads its bounded head straight from the pipe and is unaffected.)
 
 ## Limitations
 
@@ -141,4 +200,8 @@ cargo build --release
 - For DTS-HD, classification into MA/HRA relies on extension-substream sync
   patterns within the scanned window plus the PMT stream type; exotic
   streams may fall back to the generic "DTS-HD" label.
-- MPEG program streams (`.vob`, `.mpg`) are not supported.
+- ISO disc images require file access (random access across the image), so
+  they cannot be probed from stdin. AACS-encrypted Blu-ray images and
+  CSS-scrambled DVDs cannot be read; probe a decrypted backup.
+- A main-feature clip fragmented into non-adjacent extents inside a Blu-ray
+  ISO is reported as unsupported rather than probed from the wrong offset.

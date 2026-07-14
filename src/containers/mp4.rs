@@ -530,7 +530,7 @@ mod tests {
         // dac3: fscod=0 (48k), bsid=8, bsmod=0, acmod=7, lfeon=1
         let mut dac3 = Vec::new();
         // MSB-aligned in the top 3 bytes of the u32
-        let bits: u32 = (0 << 30) | (8 << 25) | (0 << 22) | (7 << 19) | (1 << 18);
+        let bits: u32 = (8 << 25) | (7 << 19) | (1 << 18);
         dac3.extend_from_slice(&bits.to_be_bytes()[0..3]);
         let entry = sample_entry(b"ac-3", 6, 16, 48000, &boxed(b"dac3", &dac3));
         let file = minimal_mp4(entry);
