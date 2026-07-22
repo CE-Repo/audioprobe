@@ -73,6 +73,13 @@ fn parse_major_sync(b: &[u8]) -> Option<CodecInfo> {
             }
         }
         let lfe = (assignment >> 2) & 1 == 1;
+
+        // The major sync continues past the channel assignments with the peak
+        // data rate and the substream count. These sit beyond the 12 bytes the
+        // scanner guarantees, so they are read best-effort: a short buffer just
+        // leaves bitrate/Atmos unresolved without failing the whole parse.
+        let (bitrate, immersive) = read_truehd_extra(&mut r, rate);
+
         Some(CodecInfo {
             name: Some("TrueHD".into()),
             sample_rate: Some(rate),
@@ -81,6 +88,8 @@ fn parse_major_sync(b: &[u8]) -> Option<CodecInfo> {
             bit_depth: Some(24),
             channels: if channels > 0 { Some(channels) } else { None },
             lfe: if channels > 0 { Some(lfe) } else { None },
+            bitrate,
+            immersive,
             note: None,
         })
     } else {
@@ -98,8 +107,36 @@ fn parse_major_sync(b: &[u8]) -> Option<CodecInfo> {
             bit_depth: MLP_QUANT_BITS.get(quant1).copied(),
             channels: MLP_CHANNELS.get(assignment).copied(),
             lfe: None,
-            note: None,
+            ..CodecInfo::default()
         })
+    }
+}
+
+/// Read the TrueHD major-sync fields that follow the channel assignments:
+/// `peak_data_rate` (converted to bits/s) and `substreams`. Dolby Atmos adds
+/// a fourth substream carrying the height/object data, so `substreams > 3`
+/// marks an Atmos stream. `r` must be positioned right after the 8-channel
+/// presentation assignment.
+fn read_truehd_extra(r: &mut BitReader, sample_rate: u32) -> (Option<u32>, Option<String>) {
+    fn read(r: &mut BitReader, sample_rate: u32) -> Option<(u32, u32)> {
+        r.skip(16 + 16 + 16)?; // signature (0xB752), flags, reserved
+        r.skip(1)?; // is_vbr
+        let peak_data_rate = r.read_u32(15)?;
+        let substreams = r.read_u32(4)?;
+        // peak_bitrate = peak_data_rate * sample_rate / 16
+        let bitrate = ((peak_data_rate as u64 * sample_rate as u64) >> 4) as u32;
+        Some((bitrate, substreams))
+    }
+    match read(r, sample_rate) {
+        Some((bitrate, substreams)) => (
+            if bitrate > 0 { Some(bitrate) } else { None },
+            if substreams > 3 {
+                Some("Atmos".into())
+            } else {
+                None
+            },
+        ),
+        None => (None, None),
     }
 }
 
@@ -129,6 +166,33 @@ mod tests {
         assert_eq!(info.bit_depth, Some(24));
         assert_eq!(info.channels, Some(6));
         assert_eq!(info.lfe, Some(true));
+    }
+
+    #[test]
+    fn parses_truehd_atmos_71() {
+        let mut w = BitWriter::new();
+        w.put(32, 0xF8726FBA);
+        w.put(4, 0); // ratebits -> 48 kHz
+        w.put(4, 0); // multichannel types + reserved
+        w.put(2, 0); // 2ch modifier
+        w.put(2, 0); // 6ch modifier
+        w.put(5, 0); // 6ch assignment
+        w.put(2, 0); // 8ch modifier
+        w.put(13, 0b0000000011111); // 8ch: 2+1+1+2+2 = 8 (7.1)
+        w.put(16, 0xB752); // signature
+        w.put(16, 0); // flags
+        w.put(16, 0); // reserved
+        w.put(1, 0); // is_vbr
+        w.put(15, 1000); // peak_data_rate
+        w.put(4, 4); // substreams -> 4 marks Atmos
+        w.put(32, 0);
+        let info = parse(&w.finish()).expect("should parse");
+        assert_eq!(info.name.as_deref(), Some("TrueHD"));
+        assert_eq!(info.channels, Some(8));
+        assert_eq!(info.lfe, Some(true));
+        // peak_bitrate = 1000 * 48000 / 16
+        assert_eq!(info.bitrate, Some(3_000_000));
+        assert_eq!(info.immersive.as_deref(), Some("Atmos"));
     }
 
     #[test]

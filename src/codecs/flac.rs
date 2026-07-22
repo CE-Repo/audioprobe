@@ -47,7 +47,8 @@ fn parse_streaminfo(b: &[u8]) -> Option<CodecInfo> {
         bit_depth: Some(bps),
         channels: Some(channels),
         lfe: None,
-        note: None,
+        // FLAC is lossless: bit rate is variable and not stored in STREAMINFO.
+        ..CodecInfo::default()
     })
 }
 

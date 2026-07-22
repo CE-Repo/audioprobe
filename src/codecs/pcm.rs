@@ -41,7 +41,8 @@ pub fn parse_hdmv_lpcm(payload: &[u8]) -> Option<CodecInfo> {
         bit_depth: Some(depth),
         channels: Some(channels),
         lfe: Some(lfe),
-        note: None,
+        bitrate: Some(rate * depth * channels),
+        ..CodecInfo::default()
     })
 }
 
@@ -77,7 +78,8 @@ pub fn parse_dvd_lpcm(hdr: &[u8]) -> Option<CodecInfo> {
         bit_depth: Some(depth),
         channels: Some(channels),
         lfe: Some(false),
-        note: None,
+        bitrate: Some(rate * depth * channels),
+        ..CodecInfo::default()
     })
 }
 
@@ -92,6 +94,7 @@ pub fn parse_waveformatex(b: &[u8]) -> Option<CodecInfo> {
     let mut tag = u16le(0);
     let channels = u16le(2);
     let rate = u32le(4);
+    let avg_bytes_per_sec = u32le(8); // nAvgBytesPerSec: nominal bit rate / 8
     let mut bits = u16le(14);
     if tag == 0xFFFE && b.len() >= 26 {
         // WAVE_FORMAT_EXTENSIBLE: wValidBitsPerSample + SubFormat GUID
@@ -125,7 +128,17 @@ pub fn parse_waveformatex(b: &[u8]) -> Option<CodecInfo> {
         bit_depth: if is_pcm && bits > 0 { Some(bits) } else { None },
         channels: Some(channels),
         lfe: None,
-        note: None,
+        // WAVEFORMATEX states its nominal rate directly in nAvgBytesPerSec,
+        // which covers compressed tags (MP3, AC-3, WMA) too; fall back to the
+        // exact PCM figure when the field is absent.
+        bitrate: if avg_bytes_per_sec > 0 {
+            Some(avg_bytes_per_sec * 8)
+        } else if is_pcm && bits > 0 {
+            Some(rate * bits * channels)
+        } else {
+            None
+        },
+        ..CodecInfo::default()
     })
 }
 
@@ -146,7 +159,8 @@ pub fn parse_alac_config(b: &[u8]) -> Option<CodecInfo> {
         bit_depth: Some(depth),
         channels: Some(channels),
         lfe: None,
-        note: None,
+        // ALAC is lossless: bit rate is variable and not in the config.
+        ..CodecInfo::default()
     })
 }
 
@@ -163,6 +177,8 @@ mod tests {
         assert_eq!(info.bit_depth, Some(24));
         assert_eq!(info.channels, Some(6));
         assert_eq!(info.lfe, Some(true));
+        // 96000 Hz * 24 bit * 6 ch
+        assert_eq!(info.bitrate, Some(13_824_000));
     }
 
     #[test]
@@ -177,5 +193,7 @@ mod tests {
         assert_eq!(info.sample_rate, Some(44100));
         assert_eq!(info.bit_depth, Some(16));
         assert_eq!(info.channels, Some(2));
+        // no nAvgBytesPerSec set -> derived 44100 * 16 * 2
+        assert_eq!(info.bitrate, Some(1_411_200));
     }
 }

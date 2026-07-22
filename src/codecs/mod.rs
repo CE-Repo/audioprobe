@@ -20,5 +20,12 @@ pub struct CodecInfo {
     pub bit_depth: Option<u32>,
     pub channels: Option<u32>,
     pub lfe: Option<bool>,
+    /// Nominal (constant-bitrate codecs) or peak (TrueHD) bit rate, in bits
+    /// per second. `None` for formats whose header carries no rate the parser
+    /// can trust (variable-bitrate AAC, lossless FLAC, …).
+    pub bitrate: Option<u32>,
+    /// Object/immersive audio layered on top of the base codec: `"Atmos"`
+    /// (TrueHD or E-AC-3/JOC) or `"DTS:X"`. `None` for channel-based audio.
+    pub immersive: Option<String>,
     pub note: Option<String>,
 }

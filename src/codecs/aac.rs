@@ -65,7 +65,7 @@ pub fn parse_asc_bits(r: &mut BitReader) -> Option<CodecInfo> {
         bit_depth: None,
         channels,
         lfe,
-        note: None,
+        ..CodecInfo::default()
     })
 }
 
@@ -85,7 +85,7 @@ pub fn parse_adts(buf: &[u8]) -> Option<CodecInfo> {
                     bit_depth: None,
                     channels,
                     lfe,
-                    note: None,
+                    ..CodecInfo::default()
                 });
             }
         }

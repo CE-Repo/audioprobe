@@ -25,6 +25,7 @@ pub fn parse_opus_head(data: &[u8]) -> Option<CodecInfo> {
         channels: if channels > 0 { Some(channels) } else { None },
         lfe: None,
         note,
+        ..CodecInfo::default()
     })
 }
 
@@ -46,7 +47,7 @@ pub fn parse_vorbis(data: &[u8]) -> Option<CodecInfo> {
         bit_depth: None,
         channels: if channels > 0 { Some(channels) } else { None },
         lfe: None,
-        note: None,
+        ..CodecInfo::default()
     })
 }
 

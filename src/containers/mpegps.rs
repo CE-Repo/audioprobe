@@ -179,8 +179,20 @@ fn dispatch(sid: u8, payload: &[u8], streams: &mut BTreeMap<u16, PsStream>) {
             let Some(&sub) = payload.first() else { return };
             match sub {
                 // AC-3 / DTS carry a 4-byte private header (sub id + frame info).
-                0x80..=0x87 => append(streams, 0x100 | sub as u16, Kind::Ac3, sub, &payload[4.min(payload.len())..]),
-                0x88..=0x8F => append(streams, 0x100 | sub as u16, Kind::Dts, sub, &payload[4.min(payload.len())..]),
+                0x80..=0x87 => append(
+                    streams,
+                    0x100 | sub as u16,
+                    Kind::Ac3,
+                    sub,
+                    &payload[4.min(payload.len())..],
+                ),
+                0x88..=0x8F => append(
+                    streams,
+                    0x100 | sub as u16,
+                    Kind::Dts,
+                    sub,
+                    &payload[4.min(payload.len())..],
+                ),
                 // LPCM: the parameters are in the 6-byte header after the sub id.
                 0xA0..=0xA7 => {
                     let key = 0x100 | sub as u16;
@@ -191,7 +203,8 @@ fn dispatch(sid: u8, payload: &[u8], streams: &mut BTreeMap<u16, PsStream>) {
                         resolved: None,
                     });
                     if entry.resolved.is_none() {
-                        entry.resolved = codecs::pcm::parse_dvd_lpcm(&payload[1.min(payload.len())..]);
+                        entry.resolved =
+                            codecs::pcm::parse_dvd_lpcm(&payload[1.min(payload.len())..]);
                     }
                 }
                 _ => {} // subpicture (0x20..=0x3F) and others: not audio
@@ -268,6 +281,8 @@ fn build_track(s: &PsStream, info: Option<CodecInfo>) -> Track {
             track.bit_depth = i.bit_depth;
             track.channels = i.channels;
             track.lfe = i.lfe;
+            track.bitrate = i.bitrate;
+            track.immersive = i.immersive;
             track.note = i.note;
         }
         None => track.note = Some("no payload captured in scan window".into()),

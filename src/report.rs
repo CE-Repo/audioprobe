@@ -10,6 +10,10 @@ pub struct Track {
     pub channels: Option<u32>,
     /// Whether an LFE channel is known to be present (drives "5.1"-style layout naming).
     pub lfe: Option<bool>,
+    /// Nominal or peak bit rate in bits per second (see `CodecInfo::bitrate`).
+    pub bitrate: Option<u32>,
+    /// Object/immersive audio present on top of the base codec ("Atmos", "DTS:X").
+    pub immersive: Option<String>,
     pub language: Option<String>,
     pub title: Option<String>,
     pub default: bool,
@@ -24,6 +28,25 @@ impl Track {
             Some(false) => Some(format!("{}.0", ch)),
             _ => None,
         }
+    }
+
+    /// Codec name for display, with the immersive-audio tag folded in
+    /// ("TrueHD" + "Atmos" -> "TrueHD Atmos", "DTS-HD MA" + "DTS:X" ->
+    /// "DTS-HD MA + DTS:X").
+    pub fn codec_display(&self) -> String {
+        match &self.immersive {
+            Some(tag) if tag == "DTS:X" => format!("{} + {}", self.codec, tag),
+            Some(tag) => format!("{} {}", self.codec, tag),
+            None => self.codec.clone(),
+        }
+    }
+}
+
+/// Render a bit rate (bits per second) as a compact `kb/s` figure.
+fn fmt_bitrate(bitrate: Option<u32>) -> String {
+    match bitrate {
+        Some(bps) => format!("{} kb/s", (bps + 500) / 1000),
+        None => "\u{2014}".into(),
     }
 }
 
@@ -69,31 +92,38 @@ pub fn render_text(r: &Report, out: &mut String) {
         return;
     }
     if r.truncated {
-        out.push_str(
-            "  note: input truncated at the head budget; later tracks may be missing\n",
-        );
+        out.push_str("  note: input truncated at the head budget; later tracks may be missing\n");
     }
     if r.tracks.is_empty() {
         out.push_str("  no audio tracks found\n");
         return;
     }
     // dynamic column widths
-    let rows: Vec<[String; 6]> = r
+    let rows: Vec<[String; 7]> = r
         .tracks
         .iter()
         .map(|t| {
             [
                 t.id.clone(),
-                t.codec.clone(),
+                t.codec_display(),
                 fmt_rate(t.sample_rate),
                 fmt_depth(t.bit_depth),
                 fmt_channels(t),
+                fmt_bitrate(t.bitrate),
                 t.language.clone().unwrap_or_else(|| "\u{2014}".into()),
             ]
         })
         .collect();
-    let header = ["#", "CODEC", "SAMPLE RATE", "BIT DEPTH", "CHANNELS", "LANG"];
-    let mut w = [0usize; 6];
+    let header = [
+        "#",
+        "CODEC",
+        "SAMPLE RATE",
+        "BIT DEPTH",
+        "CHANNELS",
+        "BITRATE",
+        "LANG",
+    ];
+    let mut w = [0usize; 7];
     for (i, h) in header.iter().enumerate() {
         w[i] = h.chars().count();
     }
@@ -141,7 +171,7 @@ pub fn render_quiet(r: &Report, out: &mut String) {
             .tracks
             .iter()
             .map(|t| {
-                let mut s = t.codec.clone();
+                let mut s = t.codec_display();
                 if let Some(rate) = t.sample_rate {
                     s.push_str(&format!(" {}Hz", rate));
                 }
@@ -152,6 +182,9 @@ pub fn render_quiet(r: &Report, out: &mut String) {
                     s.push_str(&format!(" {}", l));
                 } else if let Some(ch) = t.channels {
                     s.push_str(&format!(" {}ch", ch));
+                }
+                if let Some(bps) = t.bitrate {
+                    s.push_str(&format!(" {}kb/s", (bps + 500) / 1000));
                 }
                 if let Some(lang) = &t.language {
                     s.push_str(&format!(" ({})", lang));
@@ -239,6 +272,14 @@ pub fn render_json(reports: &[Report]) -> String {
                 json_opt_str(&t.layout())
             ));
             out.push_str(&format!(
+                "          \"bitrate\": {},\n",
+                json_opt_num(t.bitrate)
+            ));
+            out.push_str(&format!(
+                "          \"immersive\": {},\n",
+                json_opt_str(&t.immersive)
+            ));
+            out.push_str(&format!(
                 "          \"language\": {},\n",
                 json_opt_str(&t.language)
             ));
@@ -263,4 +304,70 @@ pub fn render_json(reports: &[Report]) -> String {
     }
     out.push_str("  ]\n}\n");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn atmos_track() -> Track {
+        Track {
+            id: "1".into(),
+            codec: "TrueHD".into(),
+            sample_rate: Some(48000),
+            bit_depth: Some(24),
+            channels: Some(8),
+            lfe: Some(true),
+            bitrate: Some(4_500_000),
+            immersive: Some("Atmos".into()),
+            default: true,
+            ..Track::default()
+        }
+    }
+
+    #[test]
+    fn codec_display_folds_in_immersive_tag() {
+        assert_eq!(atmos_track().codec_display(), "TrueHD Atmos");
+        let dtsx = Track {
+            codec: "DTS-HD MA".into(),
+            immersive: Some("DTS:X".into()),
+            ..Track::default()
+        };
+        assert_eq!(dtsx.codec_display(), "DTS-HD MA + DTS:X");
+    }
+
+    #[test]
+    fn bitrate_rounds_to_kb_per_second() {
+        assert_eq!(fmt_bitrate(Some(4_500_000)), "4500 kb/s");
+        assert_eq!(fmt_bitrate(Some(46_396)), "46 kb/s");
+        assert_eq!(fmt_bitrate(None), "\u{2014}");
+    }
+
+    #[test]
+    fn text_output_carries_bitrate_and_immersive() {
+        let r = Report {
+            path: "movie.thd".into(),
+            container: "TrueHD elementary stream".into(),
+            tracks: vec![atmos_track()],
+            ..Report::default()
+        };
+        let mut out = String::new();
+        render_text(&r, &mut out);
+        assert!(out.contains("BITRATE"));
+        assert!(out.contains("TrueHD Atmos"));
+        assert!(out.contains("4500 kb/s"));
+    }
+
+    #[test]
+    fn json_output_exposes_new_fields() {
+        let r = Report {
+            path: "movie.thd".into(),
+            container: "TrueHD elementary stream".into(),
+            tracks: vec![atmos_track()],
+            ..Report::default()
+        };
+        let json = render_json(&[r]);
+        assert!(json.contains("\"bitrate\": 4500000"));
+        assert!(json.contains("\"immersive\": \"Atmos\""));
+    }
 }

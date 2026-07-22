@@ -22,12 +22,20 @@ const EXSS_RATES: [u32; 16] = [
 const AMODE_CHANNELS: [u32; 16] = [1, 2, 2, 2, 2, 3, 3, 4, 4, 5, 6, 6, 6, 7, 8, 8];
 // PCMR -> source resolution in bits (0 = invalid)
 const PCMR_BITS: [u32; 8] = [16, 16, 20, 20, 0, 24, 24, 0];
+// RATE -> core transmission bit rate in bits/s. Indices 29/30/31 are
+// open / variable / lossless and carry no constant rate (stored as 0).
+const CORE_BITRATES: [u32; 32] = [
+    32000, 56000, 64000, 96000, 112000, 128000, 192000, 224000, 256000, 320000, 384000, 448000,
+    512000, 576000, 640000, 768000, 896000, 1024000, 1152000, 1280000, 1344000, 1408000, 1411200,
+    1472000, 1536000, 1920000, 2048000, 3072000, 3840000, 0, 0, 0,
+];
 
 struct Core {
     rate: u32,
     depth: Option<u32>,
     channels: u32,
     lfe: bool,
+    bitrate: Option<u32>,
     ext_audio_id: Option<u32>, // Some(_) if the core carries a core extension
 }
 
@@ -35,6 +43,10 @@ struct Exss {
     rate: Option<u32>,
     depth: Option<u32>,
     channels: Option<u32>,
+    /// `Some(false)` when the asset's channels are not mapped 1:1 to speakers,
+    /// i.e. the asset is object/representation based — the marker this parser
+    /// uses to distinguish DTS:X from channel-based DTS-HD MA.
+    one2one_map: Option<bool>,
 }
 
 pub fn parse(buf: &[u8]) -> Option<CodecInfo> {
@@ -75,6 +87,17 @@ pub fn parse(buf: &[u8]) -> Option<CodecInfo> {
         info.bit_depth = c.depth;
         info.channels = Some(c.channels + c.lfe as u32);
         info.lfe = Some(c.lfe);
+        // The core's RATE is a true constant bit rate only for a plain core
+        // stream; a DTS-HD extension makes the overall stream variable, so
+        // the core figure would be misleading and is left unset there.
+        if exss_pos.is_none() {
+            info.bitrate = c.bitrate;
+        }
+    }
+    // DTS:X rides an XLL (lossless) extension substream whose audio asset is
+    // object/representation based rather than mapped 1:1 to speakers.
+    if xll && exss.as_ref().and_then(|e| e.one2one_map) == Some(false) {
+        info.immersive = Some("DTS:X".into());
     }
     if let Some(e) = &exss {
         // The extension substream asset header describes the full (max)
@@ -120,7 +143,11 @@ fn parse_core(b: &[u8]) -> Option<Core> {
     if rate == 0 {
         return None;
     }
-    r.skip(5)?; // RATE
+    let rate_idx = r.read_u32(5)? as usize; // RATE
+    let bitrate = match CORE_BITRATES[rate_idx] {
+        0 => None,
+        b => Some(b),
+    };
     r.skip(1 + 1 + 1 + 1 + 1)?; // MIX, DYNF, TIMEF, AUXF, HDCD
     let ext_audio_id = r.read_u32(3)?;
     let ext_audio = r.read_u32(1)?;
@@ -146,6 +173,7 @@ fn parse_core(b: &[u8]) -> Option<Core> {
         depth,
         channels,
         lfe: lff == 1 || lff == 2,
+        bitrate,
         ext_audio_id: if ext_audio == 1 {
             Some(ext_audio_id)
         } else {
@@ -218,10 +246,14 @@ fn parse_exss(b: &[u8]) -> Option<Exss> {
     let bit_res = r.read_u32(5)? + 1;
     let rate_code = r.read_u32(4)? as usize;
     let channels = r.read_u32(6)? + 1;
+    // nuTotalNumChs is followed immediately by bOne2OneMapChannels2Speakers.
+    // A best-effort read: if the buffer ends here we simply don't know.
+    let one2one_map = r.read_u32(1).map(|v| v == 1);
     Some(Exss {
         rate: Some(EXSS_RATES[rate_code]),
         depth: Some(bit_res),
         channels: Some(channels),
+        one2one_map,
     })
 }
 
@@ -263,6 +295,65 @@ mod tests {
         assert_eq!(info.sample_rate, Some(48000));
         assert_eq!(info.bit_depth, Some(24));
         assert_eq!(info.channels, Some(6));
+        // core_header writes RATE = 24 -> 1536 kbit/s, and with no extension
+        // the pure core rate is a real constant bit rate.
+        assert_eq!(info.bitrate, Some(1_536_000));
+        assert_eq!(info.immersive, None);
+    }
+
+    /// Build a DTS extension-substream frame whose asset descriptor sets
+    /// `bOne2OneMapChannels2Speakers`, optionally followed by an XLL sync so
+    /// the stream classifies as lossless DTS-HD MA.
+    fn exss_frame(one2one: bool, with_xll: bool) -> Vec<u8> {
+        let mut w = BitWriter::new();
+        w.put(32, 0x64582025);
+        w.put(8, 0); // UserDefinedBits
+        w.put(2, 0); // nExtSSIndex
+        w.put(1, 0); // bHeaderSizeType
+        w.put(8, 100); // nuExtSSHeaderSize
+        w.put(16, 2000); // nuExtSSFsize
+        w.put(1, 1); // bStaticFieldsPresent
+        w.put(2, 0); // nuRefClockCode
+        w.put(3, 0); // nuExSSFrameDurationCode
+        w.put(1, 0); // bTimeStampFlag
+        w.put(3, 0); // nuNumAudioPresnt - 1
+        w.put(3, 0); // nuNumAssets - 1
+        w.put(1, 1); // nuActiveExSSMask[0]
+        w.put(8, 0); // nuActiveAssetMask[0][0]
+        w.put(1, 0); // bMixMetadataEnbl
+        w.put(16, 1500); // nuAssetFsize[0]
+        w.put(9, 50); // nuAssetDescriptFsize
+        w.put(3, 0); // nuAssetIndex
+        w.put(1, 0); // bAssetTypeDescrPresent
+        w.put(1, 0); // bLanguageDescrPresent
+        w.put(1, 0); // bInfoTextPresent
+        w.put(5, 23); // nuBitResolution - 1 -> 24
+        w.put(4, 13); // nuMaxSampleRate -> 96000
+        w.put(6, 5); // nuTotalNumChs - 1 -> 6
+        w.put(1, one2one as u64); // bOne2OneMapChannels2Speakers
+        w.put(32, 0);
+        let mut bytes = w.finish();
+        if with_xll {
+            bytes.extend_from_slice(&XLL_SYNC);
+        }
+        bytes
+    }
+
+    #[test]
+    fn detects_dtsx_object_asset() {
+        // Lossless (XLL) extension whose channels are not mapped 1:1 to
+        // speakers -> object-based DTS:X.
+        let info = parse(&exss_frame(false, true)).expect("should parse");
+        assert_eq!(info.name.as_deref(), Some("DTS-HD MA"));
+        assert_eq!(info.immersive.as_deref(), Some("DTS:X"));
+    }
+
+    #[test]
+    fn channel_based_dts_hd_ma_is_not_dtsx() {
+        // Same lossless extension but with a 1:1 speaker mapping -> plain MA.
+        let info = parse(&exss_frame(true, true)).expect("should parse");
+        assert_eq!(info.name.as_deref(), Some("DTS-HD MA"));
+        assert_eq!(info.immersive, None);
     }
 
     #[test]

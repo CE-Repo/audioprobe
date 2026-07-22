@@ -1,9 +1,9 @@
 # audioprobe
 
 Fast native audio-track inspector. Point it at an MKV, TS, M2TS, MP4 (or a
-whole directory) and get **bit depth, sample rate, channel layout, codec and
-language for every audio track** — without launching `ffprobe`, `mediainfo`
-or any other subprocess.
+whole directory) and get **bit depth, sample rate, channel layout, codec, bit
+rate, immersive-audio format (Dolby Atmos / DTS:X) and language for every audio
+track** — without launching `ffprobe`, `mediainfo` or any other subprocess.
 
 Like [hdrprobe](https://github.com/matthane/hdrprobe) does for HDR metadata,
 audioprobe does all the work in-process: it parses the container structures
@@ -14,10 +14,10 @@ probing a 40 GB remux takes milliseconds.
 $ audioprobe movie.mkv
 
 movie.mkv  [Matroska]
-  #  CODEC      SAMPLE RATE  BIT DEPTH  CHANNELS    LANG
-  1  TrueHD     48000 Hz     24-bit     7.1 (8 ch)  eng   [default]
-  2  DTS-HD MA  48000 Hz     24-bit     5.1 (6 ch)  deu
-  3  AC-3       48000 Hz     —          5.1 (6 ch)  deu
+  #  CODEC              SAMPLE RATE  BIT DEPTH  CHANNELS    BITRATE    LANG
+  1  TrueHD Atmos       48000 Hz     24-bit     7.1 (8 ch)  4500 kb/s  eng   [default]
+  2  DTS-HD MA + DTS:X  48000 Hz     24-bit     5.1 (6 ch)  —          deu
+  3  AC-3               48000 Hz     —          5.1 (6 ch)  640 kb/s   deu
 ```
 
 ## Features
@@ -36,6 +36,17 @@ movie.mkv  [Matroska]
   from the clusters and reads the value straight out of the bitstream
   (DTS core `PCMR`, DTS-HD extension substream asset headers, FLAC
   STREAMINFO, Blu-ray LPCM headers, …).
+- **Immersive audio (Dolby Atmos / DTS:X).** TrueHD Atmos is read from the
+  major-sync substream count, Dolby Digital Plus Atmos from the JOC payload in
+  the E-AC-3 `addbsi` (or the MP4 `dec3` extension flag), and DTS:X from the
+  object-based asset in the DTS-HD extension substream. Detected tracks are
+  labelled `TrueHD Atmos`, `E-AC-3 Atmos`, `DTS-HD MA + DTS:X`, and carry an
+  `"immersive"` field in JSON.
+- **Bit rate.** Reported wherever the header carries a rate the parser can
+  trust: the constant rate of AC-3, DTS core, MP1/2/3 and WAVEFORMATEX streams,
+  the frame-derived rate of E-AC-3, the peak rate of TrueHD, and the exact
+  rate of uncompressed PCM/LPCM. Variable-bitrate lossless and perceptual
+  streams with no header figure (FLAC, AAC, Opus, Vorbis) show `—` (`null`).
 - **Blu-ray aware.** BDAV M2TS (192-byte packets) is detected automatically,
   including HDMV LPCM, TrueHD (with its embedded AC-3 compatibility core),
   DTS-HD MA/HRA and E-AC-3 stream types.
@@ -122,6 +133,8 @@ JSON output:
           "bit_depth": 24,
           "channels": 6,
           "layout": "5.1",
+          "bitrate": null,
+          "immersive": "DTS:X",
           "language": "deu",
           "title": null,
           "note": null,
@@ -179,11 +192,15 @@ cargo build --release
   A DVD-Video image is walked as ISO9660 to `VIDEO_TS`; the title set with the
   most VOB bytes is probed as a program stream. The clip is read in place from
   the image — no extraction.
-- **Codec headers parsed natively:** AC-3/E-AC-3 syncframes, DTS core +
-  extension substream asset descriptors (with XLL/XBR/LBR classification),
-  TrueHD/MLP major sync, ADTS and LATM/LOAS AAC, AudioSpecificConfig,
-  MPEG audio headers, FLAC STREAMINFO, OpusHead, Vorbis ID headers,
-  Blu-ray LPCM headers and WAVEFORMATEX.
+- **Codec headers parsed natively:** AC-3/E-AC-3 syncframes (with the bsi
+  walk to the `addbsi` JOC payload for Dolby Digital Plus Atmos), DTS core +
+  extension substream asset descriptors (with XLL/XBR/LBR classification and
+  the object-asset flag for DTS:X), TrueHD/MLP major sync (peak data rate and
+  the substream count that marks TrueHD Atmos), ADTS and LATM/LOAS AAC,
+  AudioSpecificConfig, MPEG audio headers, FLAC STREAMINFO, OpusHead, Vorbis
+  ID headers, Blu-ray LPCM headers and WAVEFORMATEX. Bit rate is taken from
+  the header where it is constant, computed per frame for E-AC-3, and read as
+  the peak rate for TrueHD.
 - **Network-filesystem warming** — a file probe maps the file and, when it
   detects the file lives on a mounted network share (Windows: the open
   handle's remote-protocol info; Linux: the fstype of the holding mount in
@@ -196,10 +213,17 @@ cargo build --release
 ## Limitations
 
 - E-AC-3 channel counts come from the independent substream's `acmod`;
-  dependent substreams (7.1 extensions) and Atmos/JOC are not evaluated.
+  dependent substreams (7.1 channel extensions) are not summed. Dolby Digital
+  Plus Atmos *is* detected (the JOC payload in `addbsi`, or the `dec3` flag in
+  MP4), but the reported channel count is the 5.1/7.1 bed, not the object count.
 - For DTS-HD, classification into MA/HRA relies on extension-substream sync
   patterns within the scanned window plus the PMT stream type; exotic
-  streams may fall back to the generic "DTS-HD" label.
+  streams may fall back to the generic "DTS-HD" label. DTS:X is inferred from
+  a lossless (XLL) asset whose channels are not mapped 1:1 to speakers — a
+  best-effort signal that will not flag an object stream lacking that marker.
+- Bit rate is a nominal or (for TrueHD) peak figure read from the sync header,
+  not a measured average; variable lossless and perceptual streams that carry
+  no such figure report no bit rate rather than guess.
 - ISO disc images require file access (random access across the image), so
   they cannot be probed from stdin. AACS-encrypted Blu-ray images and
   CSS-scrambled DVDs cannot be read; probe a decrypted backup.

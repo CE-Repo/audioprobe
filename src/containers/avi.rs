@@ -104,6 +104,8 @@ fn parse_strl(buf: &[u8], start: usize, end: usize, index: u32) -> Option<Track>
         track.bit_depth = info.bit_depth;
         track.channels = info.channels;
         track.lfe = info.lfe;
+        track.bitrate = info.bitrate;
+        track.immersive = info.immersive;
     } else {
         track.note = Some("audio stream with no readable strf format".into());
     }
@@ -134,7 +136,8 @@ fn chunk_at(buf: &[u8], pos: usize, end: usize) -> Option<([u8; 4], usize, usize
         return None;
     }
     let id = [buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]];
-    let size = u32::from_le_bytes([buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7]]) as usize;
+    let size =
+        u32::from_le_bytes([buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7]]) as usize;
     let body = pos + 8;
     if body > end {
         return None;
@@ -181,7 +184,10 @@ mod tests {
         let mut strh = b"auds".to_vec();
         strh.extend_from_slice(&[0u8; 52]); // rest of AVISTREAMHEADER, unused
 
-        let strl = list(b"strl", &[chunk(b"strh", &strh), chunk(b"strf", &wfx)].concat());
+        let strl = list(
+            b"strl",
+            &[chunk(b"strh", &strh), chunk(b"strf", &wfx)].concat(),
+        );
         let hdrl = list(b"hdrl", &strl);
 
         let mut body = b"AVI ".to_vec();

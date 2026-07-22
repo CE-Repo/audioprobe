@@ -538,6 +538,8 @@ fn build_track(t: &MkvTrack, sample: Option<&Vec<u8>>) -> Track {
         bit_depth: t.bit_depth.map(|d| d as u32),
         channels: t.channels.map(|c| c as u32),
         lfe: None,
+        bitrate: None,
+        immersive: None,
         language: t.language_ietf.clone().or_else(|| t.language.clone()),
         title: t.name.clone(),
         default: t.default,
@@ -557,6 +559,12 @@ fn build_track(t: &MkvTrack, sample: Option<&Vec<u8>>) -> Track {
         if info.channels.is_some() {
             track.channels = info.channels;
             track.lfe = info.lfe;
+        }
+        if info.bitrate.is_some() {
+            track.bitrate = info.bitrate;
+        }
+        if info.immersive.is_some() {
+            track.immersive = info.immersive;
         }
         track.note = info.note;
     } else if wants_frame_sample(&t.codec_id) && sample.is_empty() {

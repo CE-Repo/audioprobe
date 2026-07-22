@@ -273,7 +273,20 @@ fn apply_entry_info(
             track.channels = i.channels;
             track.lfe = i.lfe;
         }
+        if i.bitrate.is_some() {
+            track.bitrate = i.bitrate;
+        }
+        if i.immersive.is_some() {
+            track.immersive = i.immersive;
+        }
         track.note = i.note;
+    }
+    // Uncompressed PCM has a trivially exact bit rate the config boxes never
+    // spell out; derive it once all three inputs are known.
+    if is_pcm && track.bitrate.is_none() {
+        if let (Some(r), Some(d), Some(ch)) = (track.sample_rate, track.bit_depth, track.channels) {
+            track.bitrate = Some(r * d * ch);
+        }
     }
 }
 
@@ -394,6 +407,10 @@ fn read_descriptor(b: &[u8]) -> Option<(u8, &[u8])> {
 
 const AC3_RATES: [u32; 3] = [48000, 44100, 32000];
 const ACMOD_CHANNELS: [u32; 8] = [2, 1, 2, 3, 3, 4, 4, 5];
+// AC-3 nominal bit rate in kbit/s, indexed by (frmsizecod >> 1).
+const AC3_BITRATES: [u32; 19] = [
+    32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640,
+];
 
 fn parse_dac3(body: &[u8]) -> Option<CodecInfo> {
     let mut r = BitReader::new(body);
@@ -401,29 +418,58 @@ fn parse_dac3(body: &[u8]) -> Option<CodecInfo> {
     r.skip(5 + 3)?; // bsid, bsmod
     let acmod = r.read_u32(3)? as usize;
     let lfeon = r.read_u32(1)?;
+    let frmsizecod = r.read_u32(6)?;
     Some(CodecInfo {
         name: Some("AC-3".into()),
         sample_rate: AC3_RATES.get(fscod as usize).copied(),
         bit_depth: None,
         channels: Some(ACMOD_CHANNELS[acmod] + lfeon),
         lfe: Some(lfeon == 1),
-        note: None,
+        bitrate: AC3_BITRATES
+            .get((frmsizecod >> 1) as usize)
+            .map(|kb| kb * 1000),
+        ..CodecInfo::default()
     })
 }
 
 fn parse_dec3(body: &[u8]) -> Option<CodecInfo> {
     let mut r = BitReader::new(body);
-    r.skip(13 + 3)?; // data_rate, num_ind_sub
+    // data_rate is the overall nominal bit rate of the stream in kbit/s.
+    let data_rate = r.read_u32(13)?;
+    let num_ind_sub = r.read_u32(3)? + 1;
     let fscod = r.read_u32(2)?;
     r.skip(5 + 1 + 1 + 3)?; // bsid, reserved, asvc, bsmod
     let acmod = r.read_u32(3)? as usize;
     let lfeon = r.read_u32(1)?;
+    r.skip(3)?; // reserved
+    let num_dep_sub = r.read_u32(4)?;
+    if num_dep_sub > 0 {
+        r.skip(9)?; // chan_loc
+    } else {
+        r.skip(1)?; // reserved
+    }
+    // A single independent substream may carry a JOC (Atmos) extension,
+    // flagged by flag_ec3_extension_type_a after the per-substream fields.
+    let immersive = if num_ind_sub == 1 {
+        match r.read_u32(7 + 1) {
+            Some(v) if v & 1 == 1 => Some("Atmos".into()), // reserved(7) + flag_ec3_extension_type_a(1)
+            _ => None,
+        }
+    } else {
+        None
+    };
     Some(CodecInfo {
         name: Some("E-AC-3".into()),
         sample_rate: AC3_RATES.get(fscod as usize).copied(),
         bit_depth: None,
         channels: Some(ACMOD_CHANNELS[acmod] + lfeon),
         lfe: Some(lfeon == 1),
+        bitrate: if data_rate > 0 {
+            Some(data_rate * 1000)
+        } else {
+            None
+        },
+        immersive,
         note: None,
     })
 }
@@ -432,7 +478,10 @@ fn parse_ddts(body: &[u8], format: &[u8; 4]) -> Option<CodecInfo> {
     if body.len() < 13 {
         return None;
     }
+    // DTSSpecificBox: SamplingFrequency(32) maxBitrate(32) avgBitrate(32)
+    // pcmSampleDepth(8) …
     let rate = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
+    let avg_bitrate = u32::from_be_bytes([body[8], body[9], body[10], body[11]]);
     let depth = body[12] as u32;
     let name = match format {
         b"dtsh" => "DTS-HD",
@@ -446,7 +495,12 @@ fn parse_ddts(body: &[u8], format: &[u8; 4]) -> Option<CodecInfo> {
         bit_depth: if depth > 0 { Some(depth) } else { None },
         channels: None,
         lfe: None,
-        note: None,
+        bitrate: if avg_bitrate > 0 {
+            Some(avg_bitrate)
+        } else {
+            None
+        },
+        ..CodecInfo::default()
     })
 }
 
@@ -459,7 +513,7 @@ fn parse_dops(body: &[u8]) -> Option<CodecInfo> {
         bit_depth: None,
         channels: if channels > 0 { Some(channels) } else { None },
         lfe: None,
-        note: None,
+        ..CodecInfo::default()
     })
 }
 
@@ -542,6 +596,43 @@ mod tests {
         assert_eq!(t.channels, Some(6));
         assert_eq!(t.language.as_deref(), Some("deu"));
         assert_eq!(t.id, "2");
+    }
+
+    #[test]
+    fn probes_mp4_with_eac3_atmos_track() {
+        // dec3: data_rate=768, one independent substream (fscod=0, acmod=7,
+        // lfeon=1, no dependent substreams), then the JOC extension flag.
+        let dec3 = {
+            use crate::bits::tests_support::BitWriter;
+            let mut w = BitWriter::new();
+            w.put(13, 768); // data_rate (kbit/s)
+            w.put(3, 0); // num_ind_sub - 1 -> 1 substream
+            w.put(2, 0); // fscod = 48 kHz
+            w.put(5, 16); // bsid
+            w.put(1, 0); // reserved
+            w.put(1, 0); // asvc
+            w.put(3, 0); // bsmod
+            w.put(3, 7); // acmod = 3/2
+            w.put(1, 1); // lfeon
+            w.put(3, 0); // reserved
+            w.put(4, 0); // num_dep_sub = 0
+            w.put(1, 0); // reserved (num_dep_sub == 0 branch)
+            w.put(7, 0); // reserved
+            w.put(1, 1); // flag_ec3_extension_type_a -> Atmos
+            w.put(8, 16); // complexity_index_type_a (object count)
+            w.finish()
+        };
+        let entry = sample_entry(b"ec-3", 6, 16, 48000, &boxed(b"dec3", &dec3));
+        let file = minimal_mp4(entry);
+        let len = file.len() as u64;
+        let report = probe(Cursor::new(file), len).expect("probe ok");
+        let t = &report.tracks[0];
+        assert_eq!(t.codec, "E-AC-3");
+        assert_eq!(t.channels, Some(6));
+        assert_eq!(t.lfe, Some(true));
+        assert_eq!(t.bitrate, Some(768_000));
+        assert_eq!(t.immersive.as_deref(), Some("Atmos"));
+        assert_eq!(t.codec_display(), "E-AC-3 Atmos");
     }
 
     #[test]

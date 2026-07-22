@@ -214,6 +214,8 @@ fn single_track_report(container: &str, info: CodecInfo) -> Report {
             bit_depth: info.bit_depth,
             channels: info.channels,
             lfe: info.lfe,
+            bitrate: info.bitrate,
+            immersive: info.immersive,
             note: info.note,
             default: true,
             ..Track::default()

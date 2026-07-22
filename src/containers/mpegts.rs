@@ -440,6 +440,8 @@ fn parse_payload(kind: Kind, buf: &[u8]) -> Option<CodecInfo> {
             codecs::ac3::parse(buf).map(|mut i| {
                 i.name = Some("TrueHD".into());
                 i.bit_depth = None;
+                // The AC-3 core's constant bit rate is not the TrueHD rate.
+                i.bitrate = None;
                 i.note = Some("parameters from embedded AC-3 core".into());
                 i
             })
@@ -494,6 +496,8 @@ fn build_track(pid: u16, s: &EsStream, info: Option<CodecInfo>) -> Track {
             track.bit_depth = i.bit_depth;
             track.channels = i.channels;
             track.lfe = i.lfe;
+            track.bitrate = i.bitrate;
+            track.immersive = i.immersive;
             track.note = i.note;
         }
         None => {
