@@ -1,6 +1,6 @@
 [package]
 name = "audioprobe"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Fast native audio-track inspector: bit depth, sample rate, channels and codec for every audio track in MKV, TS, M2TS, MP4 and more — no ffprobe, no subprocesses."
 license = "MIT"
